@@ -193,17 +193,18 @@ flowchart TD
 ### Phase 4: Clinician Briefs & Consultation Sharing
 **Goal**: Backend services for 15-minute doctor consultation preparation and secure temporary data sharing.
 
-- [ ] **4.1 Doctor Brief Aggregation Endpoint**
-  - Create `GET /api/profiles/:id/visit-brief`:
-    - Summarizes chief complaints, tracking duration, cycle statistics, peak pain windows, and selected clinician questions.
-- [ ] **4.2 Time-Limited Clinician Sharing Tokens**
-  - Implement `POST /api/profiles/:id/share-link`:
-    - Generates a signed, read-only clinician view token with 24h or 48h expiration.
-  - Create `GET /api/shared/brief/:token`:
+- [x] **4.1 Doctor Brief Aggregation Endpoint**
+  - Created `GET /api/profiles/:id/visit-brief`:
+    - Summarizes patient demographics, tracking duration, cycle averages, peak pain occurrences, and active checklist discussion questions.
+- [x] **4.2 Time-Limited Clinician Sharing Tokens**
+  - Implemented `POST /api/profiles/:id/share-link`:
+    - Generates a signed, read-only clinician view token with 24h–72h expiration.
+  - Implemented `GET /api/shared/brief/:token`:
     - Allows a doctor to access the printable summary brief without creating an account or viewing credentials.
-- [ ] **4.3 Bidirectional Backup & Restore**
-  - Implement `POST /api/profiles/:id/import` to complement existing `GET /api/profiles/:id/export`.
-  - Implement `DELETE /api/profiles/:id/data` (GDPR Right to Be Forgotten / full patient data wipe).
+- [x] **4.3 Bidirectional Backup & Restore & Right-to-be-Forgotten**
+  - Implemented `POST /api/profiles/:id/import` to complement existing `GET /api/profiles/:id/export` with atomic transactions.
+  - Implemented `DELETE /api/profiles/:id/data` (GDPR Right to Be Forgotten / full patient data wipe).
+  - Added automated test suite `Backend/tests/phase4_brief.test.js`.
 
 ---
 
