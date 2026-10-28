@@ -1,5 +1,7 @@
 import { query } from '../config/db.js';
 import { formatLogRow } from '../utils/formatters.js';
+import { calculateCycleDayForDate } from '../services/cycleService.js';
+import { evaluateSafetyFlags } from '../services/safetyEngine.js';
 
 export async function getLogs(req, res, next) {
   const { id } = req.params;
@@ -41,9 +43,31 @@ export async function upsertLog(req, res, next) {
   } = req.body;
 
   try {
-    const profileCheck = await query('SELECT id FROM profiles WHERE id = $1', [id]);
-    if (profileCheck.rows.length === 0) {
+    const profileRes = await query('SELECT * FROM profiles WHERE id = $1', [id]);
+    if (profileRes.rows.length === 0) {
       return res.status(404).json({ error: `Profile '${id}' not found.` });
+    }
+    const profile = profileRes.rows[0];
+
+    // Fetch existing logs for context & cycle day estimation
+    const existingLogsRes = await query(
+      'SELECT * FROM symptom_logs WHERE profile_id = $1 ORDER BY log_date ASC',
+      [id]
+    );
+    const existingLogs = {};
+    for (const row of existingLogsRes.rows) {
+      existingLogs[row.log_date] = formatLogRow(row);
+    }
+
+    // Auto-compute cycle day if omitted
+    let finalCycleDay = cycleDay ? Number(cycleDay) : null;
+    if (!finalCycleDay) {
+      const calcResult = calculateCycleDayForDate(date, existingLogs, {
+        typicalCycleLength: profile.typical_cycle_length,
+        typicalPeriodLength: profile.typical_period_length,
+        currentCycleDay: profile.current_cycle_day
+      });
+      finalCycleDay = calcResult.cycleDay;
     }
 
     const upsertRes = await query(
@@ -67,7 +91,7 @@ export async function upsertLog(req, res, next) {
       [
         id,
         date,
-        cycleDay ? Number(cycleDay) : null,
+        finalCycleDay,
         bleeding,
         Number(painScore),
         Boolean(functionalImpact),
@@ -79,7 +103,29 @@ export async function upsertLog(req, res, next) {
       ]
     );
 
-    res.json(formatLogRow(upsertRes.rows[0]));
+    const savedLog = formatLogRow(upsertRes.rows[0]);
+    existingLogs[date] = savedLog;
+
+    // Run real-time safety red-flag triage
+    const safetyFlags = evaluateSafetyFlags(savedLog, existingLogs);
+
+    // Auto-record triggered safety events if not duplicate
+    for (const flag of safetyFlags) {
+      try {
+        await query(
+          `INSERT INTO safety_events (profile_id, event_date, flag_id, severity, title, reason, action, triggered_fields, is_demo)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false)`,
+          [id, date, flag.id, flag.severity, flag.title, flag.reason, flag.action, flag.triggeredFields]
+        );
+      } catch {
+        // Suppress duplicate safety event logging
+      }
+    }
+
+    res.json({
+      ...savedLog,
+      safetyAlerts: safetyFlags
+    });
   } catch (err) {
     next(err);
   }

@@ -173,18 +173,20 @@ flowchart TD
 ### Phase 3: Clinical Domain Engine & Health Analytics
 **Goal**: Migrate clinical intelligence, cycle calculations, and safety triage rules from the frontend to the backend service.
 
-- [ ] **3.1 Cycle Calculation Engine**
-  - Port `src/utils/cycleCalculations.js` into `Backend/services/cycleService.js`.
-  - Automatically compute `cycleDay`, `currentPhase`, and estimated next period date on log upsert.
-- [ ] **3.2 Longitudinal Clinical Rule Evaluation**
-  - Port `src/data/clinicalRules.js` into `Backend/services/clinicalEngine.js`.
-  - Add endpoint `GET /api/profiles/:id/insights` that dynamically analyzes logs and computes:
+- [x] **3.1 Cycle Calculation Engine**
+  - Ported calculation utilities to `Backend/services/cycleService.js`.
+  - Automatically computes `cycleDay`, `currentPhase`, and estimated next period date on log upsert.
+- [x] **3.2 Longitudinal Clinical Rule Evaluation**
+  - Ported rules to `Backend/services/clinicalEngine.js`.
+  - Added endpoint `GET /api/profiles/:id/insights` and `GET /api/profiles/:id/cycle-summary`:
     - **Endometriosis indicators**: Severe dysmenorrhea (pain $\ge 7$), mid-cycle ovulatory pain, incapacitation days.
     - **PCOS indicators**: Cycle length variability (>35 days), hormonal skin/hair symptom clusters.
     - **Menorrhagia & Anaemia indicators**: $\ge 3$ consecutive heavy bleeding days, high fatigue, and dizziness.
-- [ ] **3.3 Automated Safety Triage Engine**
-  - Port `src/services/safetyRules.js` into `Backend/services/safetyEngine.js`.
-  - Run safety rules inside `PUT /api/profiles/:id/logs/:date`; if critical red-flags trigger (e.g. pain = 10, sustained severe hemorrhage), automatically insert safety event records and return alert warnings in the HTTP response.
+- [x] **3.3 Automated Safety Triage Engine**
+  - Ported safety engine to `Backend/services/safetyEngine.js`.
+  - Evaluates real-time red flags inside `PUT /api/profiles/:id/logs/:date` (emergency pain $\ge 9$, syncope/vomiting, orthostatic dizziness with hemorrhage).
+  - Automatically persists red flags to `safety_events` table and returns safety alerts with response.
+  - Added automated test suite `Backend/tests/phase3_clinical.test.js`.
 
 ---
 

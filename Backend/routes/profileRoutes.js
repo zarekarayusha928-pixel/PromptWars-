@@ -4,6 +4,7 @@ import { getLogs, upsertLog, deleteLog } from '../controllers/logController.js';
 import { getQuestions, updateQuestions } from '../controllers/questionController.js';
 import { getSafetyEvents, createSafetyEvent } from '../controllers/safetyController.js';
 import { exportProfile } from '../controllers/exportController.js';
+import { getInsights, getCycleSummary } from '../controllers/insightController.js';
 import { requireAuth, requireProfileOwnership } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -59,6 +60,23 @@ router.delete(
   requireAuth,
   requireProfileOwnership,
   deleteLog
+);
+
+// Clinical Pattern Insights & Cycle Metrics
+router.get(
+  '/:id/insights',
+  validate(profileIdParamSchema, 'params'),
+  requireAuth,
+  requireProfileOwnership,
+  getInsights
+);
+
+router.get(
+  '/:id/cycle-summary',
+  validate(profileIdParamSchema, 'params'),
+  requireAuth,
+  requireProfileOwnership,
+  getCycleSummary
 );
 
 // Discussion Questions
