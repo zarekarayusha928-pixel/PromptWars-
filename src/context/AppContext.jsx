@@ -6,11 +6,13 @@ import {
   computeSummaryMetricsFromLogs, 
   getEstimatedNextPeriod 
 } from '../utils/cycleCalculations';
+import { api, tokenStorage } from '../services/api';
 
 const AppContext = createContext();
 
 const STORAGE_KEY_PROFILE = 'saheli_profile_id';
 const STORAGE_KEY_PROFILES_DATA = 'saheli_profiles_data';
+const STORAGE_KEY_AUTH_USER = 'saheli_auth_user';
 
 // Helper to normalize question objects
 function normalizeQuestions(questions = []) {
@@ -27,23 +29,34 @@ function normalizeQuestions(questions = []) {
 }
 
 export function AppProvider({ children }) {
+  // Authentication & Backend Status
+  const [authUser, setAuthUser] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem(STORAGE_KEY_AUTH_USER);
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
+
   // Load current active profile id
   const [profileId, setProfileId] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PROFILE);
-      return saved && (SAMPLE_PROFILES[saved] || saved === 'amara') ? saved : 'amara';
+      return saved && (SAMPLE_PROFILES[saved] || saved === 'amara' || saved.startsWith('usr_')) ? saved : 'amara';
     } catch {
       return 'amara';
     }
   });
 
-  // Load profiles dictionary (allowing edits to persist)
+  // Load profiles dictionary (allowing edits to persist locally)
   const [profiles, setProfiles] = useState(() => {
     try {
       const savedData = localStorage.getItem(STORAGE_KEY_PROFILES_DATA);
       if (savedData) {
         const parsed = JSON.parse(savedData);
-        // Ensure consentSettings and normalized questions exist on all loaded profiles
         const merged = { ...SAMPLE_PROFILES };
         Object.keys(parsed).forEach((k) => {
           merged[k] = {
@@ -64,23 +77,6 @@ export function AppProvider({ children }) {
     return SAMPLE_PROFILES;
   });
 
-  // Mobile navigation drawer state
-  const [isMobileNavDrawerOpen, setIsMobileNavDrawerOpen] = useState(false);
-
-  // Active profile
-  const currentProfile = profiles[profileId] || SAMPLE_PROFILES.amara;
-  const logs = currentProfile.logs || {};
-
-  // Persist whenever profiles or profileId changes
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_PROFILE, profileId);
-      localStorage.setItem(STORAGE_KEY_PROFILES_DATA, JSON.stringify(profiles));
-    } catch (e) {
-      console.error('Failed to persist to localStorage:', e);
-    }
-  }, [profileId, profiles]);
-
   // Toast Notification state
   const [toast, setToast] = useState(null);
   const showToast = (message, type = 'success') => {
@@ -90,11 +86,171 @@ export function AppProvider({ children }) {
     }, 3800);
   };
 
+  // Mobile navigation drawer state
+  const [isMobileNavDrawerOpen, setIsMobileNavDrawerOpen] = useState(false);
+
   // Modals state
   const [isUrgentModalOpen, setIsUrgentModalOpen] = useState(false);
   const [isDisclaimerModalOpen, setIsDisclaimerModalOpen] = useState(false);
   const [activeEvidenceRule, setActiveEvidenceRule] = useState(null);
   const [activeEduArticle, setActiveEduArticle] = useState(null);
+
+  // Active profile
+  const currentProfile = profiles[profileId] || SAMPLE_PROFILES.amara;
+  const logs = currentProfile.logs || {};
+
+  // Check backend health & auto-sync on boot
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkAndSync() {
+      const healthRes = await api.health.check();
+      if (isMounted && healthRes.success) {
+        setIsBackendConnected(true);
+
+        // If auth token exists, verify /me and sync profile
+        if (tokenStorage.getAccessToken()) {
+          const meRes = await api.auth.me();
+          if (isMounted && meRes.success && meRes.data?.user) {
+            setAuthUser(meRes.data.user);
+            try {
+              localStorage.setItem(STORAGE_KEY_AUTH_USER, JSON.stringify(meRes.data.user));
+            } catch {}
+
+            if (meRes.data.profile) {
+              const serverProfile = meRes.data.profile;
+              // Fetch remote logs
+              const logsRes = await api.logs.get(serverProfile.id);
+              const serverLogs = logsRes.success && logsRes.data ? logsRes.data : {};
+
+              setProfiles((prev) => ({
+                ...prev,
+                [serverProfile.id]: {
+                  ...(prev[serverProfile.id] || {}),
+                  ...serverProfile,
+                  logs: {
+                    ...(prev[serverProfile.id]?.logs || {}),
+                    ...serverLogs
+                  }
+                }
+              }));
+              setProfileId(serverProfile.id);
+            }
+          }
+        }
+      } else if (isMounted) {
+        setIsBackendConnected(false);
+      }
+    }
+
+    checkAndSync();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Persist local state whenever profiles or profileId changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_PROFILE, profileId);
+      localStorage.setItem(STORAGE_KEY_PROFILES_DATA, JSON.stringify(profiles));
+    } catch (e) {
+      console.error('Failed to persist to localStorage:', e);
+    }
+  }, [profileId, profiles]);
+
+  // Auth Operations
+  const loginUser = async (email, password) => {
+    const res = await api.auth.login(email, password);
+    if (res.success && res.data?.user) {
+      setAuthUser(res.data.user);
+      try {
+        localStorage.setItem(STORAGE_KEY_AUTH_USER, JSON.stringify(res.data.user));
+      } catch {}
+
+      if (res.data.profile) {
+        const p = res.data.profile;
+        setProfiles((prev) => ({
+          ...prev,
+          [p.id]: {
+            ...(prev[p.id] || {}),
+            ...p,
+            logs: prev[p.id]?.logs || {}
+          }
+        }));
+        setProfileId(p.id);
+      }
+      showToast(`Welcome back, ${res.data.user.name}!`);
+      return { success: true, user: res.data.user };
+    }
+
+    if (res.isOffline) {
+      // Offline fallback: match demo persona by email
+      const matchedKey = Object.keys(SAMPLE_PROFILES).find(
+        (k) => SAMPLE_PROFILES[k].name.toLowerCase().includes(email.split('@')[0].split('.')[0])
+      ) || 'amara';
+      setProfileId(matchedKey);
+      showToast(`Logged in locally as ${SAMPLE_PROFILES[matchedKey]?.name || 'Demo User'} (Offline Sandbox)`);
+      return { success: true, isOffline: true };
+    }
+
+    showToast(res.error || 'Authentication failed', 'error');
+    return { success: false, error: res.error };
+  };
+
+  const signupUser = async (name, email, password) => {
+    const res = await api.auth.signup(name, email, password);
+    if (res.success && res.data?.user) {
+      setAuthUser(res.data.user);
+      try {
+        localStorage.setItem(STORAGE_KEY_AUTH_USER, JSON.stringify(res.data.user));
+      } catch {}
+
+      if (res.data.profile) {
+        const p = res.data.profile;
+        setProfiles((prev) => ({
+          ...prev,
+          [p.id]: {
+            ...p,
+            logs: {}
+          }
+        }));
+        setProfileId(p.id);
+      }
+      showToast(`Welcome to Saheli, ${res.data.user.name}!`);
+      return { success: true, user: res.data.user };
+    }
+
+    if (res.isOffline) {
+      const newId = `usr_${Date.now()}`;
+      setProfiles((prev) => ({
+        ...prev,
+        [newId]: {
+          id: newId,
+          name: name.trim(),
+          age: null,
+          typicalCycleLength: 28,
+          typicalPeriodLength: 5,
+          logs: {},
+          customQuestions: [{ id: `q1_${Date.now()}`, text: 'How do my symptoms compare to expected menstrual patterns?', inReport: true }]
+        }
+      }));
+      setProfileId(newId);
+      showToast(`Account created locally as ${name} (Offline Sandbox)`);
+      return { success: true, isOffline: true };
+    }
+
+    showToast(res.error || 'Registration failed', 'error');
+    return { success: false, error: res.error };
+  };
+
+  const logoutUser = async () => {
+    await api.auth.logout();
+    tokenStorage.clearTokens();
+    setAuthUser(null);
+    localStorage.removeItem(STORAGE_KEY_AUTH_USER);
+    showToast('Signed out successfully.');
+  };
 
   // Switch persona profile
   const switchProfile = (newId) => {
@@ -113,8 +269,8 @@ export function AppProvider({ children }) {
     showToast('Reset to original sample data successfully');
   };
 
-  // Clear all local data (for Privacy page)
-  const clearAllData = () => {
+  // Clear all local & remote data (for Privacy page)
+  const clearAllData = async () => {
     const blankProfiles = {
       ...SAMPLE_PROFILES,
       guest: {
@@ -126,6 +282,9 @@ export function AppProvider({ children }) {
     setProfiles(blankProfiles);
     setProfileId('guest');
     localStorage.clear();
+
+    // Trigger backend data wipe if connected
+    api.backup.wipeData(profileId).catch(() => {});
     showToast('All local logs and stored data cleared.');
   };
 
@@ -148,21 +307,18 @@ export function AppProvider({ children }) {
     return getEstimatedNextPeriod(logs, currentProfile, todayKey);
   }, [logs, currentProfile, todayKey]);
 
-  // Save entry (supports async feedback)
+  // Save entry (supports async feedback & backend sync)
   const [isSavingEntry, setIsSavingEntry] = useState(false);
   const saveEntry = async (entryData) => {
     setIsSavingEntry(true);
     const dateKey = entryData.date || todayKey;
 
-    // Check if severe pain was entered (9 or 10) to proactively suggest urgent care guide
     if (Number(entryData.painScore) >= 9) {
       setIsUrgentModalOpen(true);
     }
 
     try {
-      // Small simulated latency for accessible UX feedback
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
+      // 1. Optimistic local update
       setProfiles((prev) => {
         const active = prev[profileId] || SAMPLE_PROFILES.amara;
         const updatedLogs = {
@@ -181,6 +337,15 @@ export function AppProvider({ children }) {
           }
         };
       });
+
+      // 2. Asynchronous backend persistence
+      const syncRes = await api.logs.upsert(profileId, dateKey, entryData);
+      if (syncRes.success && syncRes.data?.safetyAlerts?.length > 0) {
+        const hasUrgent = syncRes.data.safetyAlerts.some((a) => a.severity === 'urgent');
+        if (hasUrgent) {
+          setIsUrgentModalOpen(true);
+        }
+      }
 
       showToast(`Saved check-in for ${dateKey}`);
       return { success: true };
@@ -206,6 +371,8 @@ export function AppProvider({ children }) {
         }
       };
     });
+
+    api.logs.delete(profileId, dateKey).catch(() => {});
     showToast(`Deleted check-in entry for ${dateKey}`, 'info');
   };
 
@@ -218,6 +385,8 @@ export function AppProvider({ children }) {
         ...updates
       }
     }));
+
+    api.profiles.update(profileId, updates).catch(() => {});
     showToast('Profile preferences updated');
   };
 
@@ -225,15 +394,17 @@ export function AppProvider({ children }) {
   const updateConsentSettings = (consentUpdates) => {
     setProfiles((prev) => {
       const active = prev[profileId] || SAMPLE_PROFILES.amara;
+      const updated = {
+        ...DEFAULT_CONSENT_SETTINGS,
+        ...(active.consentSettings || {}),
+        ...consentUpdates
+      };
+      api.profiles.update(profileId, { consentSettings: updated }).catch(() => {});
       return {
         ...prev,
         [profileId]: {
           ...active,
-          consentSettings: {
-            ...DEFAULT_CONSENT_SETTINGS,
-            ...(active.consentSettings || {}),
-            ...consentUpdates
-          }
+          consentSettings: updated
         }
       };
     });
@@ -248,9 +419,9 @@ export function AppProvider({ children }) {
       text: questionText.trim(),
       inReport: true
     };
-    updateProfile({
-      customQuestions: [...currentQuestions, newQ]
-    });
+    const updated = [...currentQuestions, newQ];
+    updateProfile({ customQuestions: updated });
+    api.questions.update(profileId, updated).catch(() => {});
     showToast('Added discussion question to clinician brief');
   };
 
@@ -262,10 +433,11 @@ export function AppProvider({ children }) {
       q.id === id ? { ...q, text: newText.trim() } : q
     );
     updateProfile({ customQuestions: updated });
+    api.questions.update(profileId, updated).catch(() => {});
     showToast('Question updated');
   };
 
-  // Question Management: Reorder (direction: -1 for up, 1 for down)
+  // Question Management: Reorder
   const moveDoctorQuestion = (index, direction) => {
     const currentQuestions = [...normalizeQuestions(currentProfile.customQuestions)];
     const targetIndex = index + direction;
@@ -274,6 +446,7 @@ export function AppProvider({ children }) {
     const [moved] = currentQuestions.splice(index, 1);
     currentQuestions.splice(targetIndex, 0, moved);
     updateProfile({ customQuestions: currentQuestions });
+    api.questions.update(profileId, currentQuestions).catch(() => {});
   };
 
   // Question Management: Toggle Report Inclusion
@@ -283,6 +456,7 @@ export function AppProvider({ children }) {
       q.id === id ? { ...q, inReport: !q.inReport } : q
     );
     updateProfile({ customQuestions: updated });
+    api.questions.update(profileId, updated).catch(() => {});
   };
 
   // Question Management: Remove
@@ -290,6 +464,7 @@ export function AppProvider({ children }) {
     const currentQuestions = normalizeQuestions(currentProfile.customQuestions);
     const filtered = currentQuestions.filter((q) => q.id !== id);
     updateProfile({ customQuestions: filtered });
+    api.questions.update(profileId, filtered).catch(() => {});
     showToast('Question removed from brief', 'info');
   };
 
@@ -332,6 +507,7 @@ export function AppProvider({ children }) {
           }
         }));
         setProfileId(parsed.activeProfileId || 'guest');
+        api.backup.import(parsed.activeProfileId || 'guest', parsed).catch(() => {});
         showToast('Successfully restored backup records');
         return { success: true };
       } else if (parsed.allProfiles) {
@@ -411,7 +587,13 @@ export function AppProvider({ children }) {
         activeEduArticle,
         setActiveEduArticle,
         isMobileNavDrawerOpen,
-        setIsMobileNavDrawerOpen
+        setIsMobileNavDrawerOpen,
+        isBackendConnected,
+        authUser,
+        loginUser,
+        signupUser,
+        logoutUser,
+        api
       }}
     >
       {children}

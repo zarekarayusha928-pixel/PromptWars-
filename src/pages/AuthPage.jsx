@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Lock, Mail, User, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { Lock, Mail, User, Eye, EyeOff, ArrowRight, CheckCircle2, Wifi } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import BrandLogo from '../components/common/BrandLogo';
 
@@ -11,11 +11,12 @@ export default function AuthPage({ isSignUp = false }) {
   const [name, setName] = useState('Priya Sharma');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { showToast, currentProfile } = useApp();
+  const { showToast, loginUser, signupUser, isBackendConnected } = useApp();
   const navigate = useNavigate();
 
-  const handleAuthSubmit = (e) => {
+  const handleAuthSubmit = async (e) => {
     e.preventDefault();
     if (activeTab === 'signup' && !name.trim()) {
       showToast('Please enter your name', 'error');
@@ -26,8 +27,21 @@ export default function AuthPage({ isSignUp = false }) {
       return;
     }
 
-    showToast(`Welcome back, ${activeTab === 'signup' ? name : currentProfile.name}!`);
-    navigate('/dashboard');
+    setIsSubmitting(true);
+    try {
+      let result;
+      if (activeTab === 'signup') {
+        result = await signupUser(name, email, password);
+      } else {
+        result = await loginUser(email, password);
+      }
+
+      if (result.success) {
+        navigate('/dashboard');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -44,9 +58,16 @@ export default function AuthPage({ isSignUp = false }) {
         }}
       >
         <BrandLogo to="/" size="md" />
-        <Link to="/dashboard" className="btn btn-outline" style={{ fontSize: '0.8rem' }}>
-          Skip to Dashboard →
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          {isBackendConnected && (
+            <span style={{ fontSize: '0.78rem', color: 'var(--color-sage, #2E7D52)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
+              <CheckCircle2 size={14} /> Backend API Online
+            </span>
+          )}
+          <Link to="/dashboard" className="btn btn-outline" style={{ fontSize: '0.8rem' }}>
+            Skip to Dashboard →
+          </Link>
+        </div>
       </header>
 
       {/* Main Centered Content */}
@@ -213,6 +234,7 @@ export default function AuthPage({ isSignUp = false }) {
 
               <button
                 type="submit"
+                disabled={isSubmitting}
                 className="btn btn-primary"
                 style={{ 
                   width: '100%', 
@@ -222,10 +244,17 @@ export default function AuthPage({ isSignUp = false }) {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: '0.5rem'
+                  gap: '0.5rem',
+                  opacity: isSubmitting ? 0.75 : 1
                 }}
               >
-                <span>{activeTab === 'login' ? 'Sign In to Workspace' : 'Create Account'}</span>
+                <span>
+                  {isSubmitting
+                    ? 'Connecting...'
+                    : activeTab === 'login'
+                    ? 'Sign In to Workspace'
+                    : 'Create Account'}
+                </span>
                 <ArrowRight size={16} />
               </button>
             </form>
